@@ -25,30 +25,36 @@ from tests import pkb_common_test_case
 WRONG_RESULT = [sample.Sample('fake_metric', 0, 'fake_unit', {'threads': 10})]
 
 
+def GetRedisEnterpriseOutput(file: str) -> str:
+  path = os.path.join(os.path.dirname(__file__), '..', 'data', file)
+  with open(path) as f:
+    return f.read()
+
+
+class RedisAdminTest(pkb_common_test_case.PkbCommonTestCase):
+
+  def testMemorySize(self):
+    output = GetRedisEnterpriseOutput('redis_enterprise_cluster_output.txt')
+    mock_vm = mock.Mock()
+    mock_vm.RemoteCommand.return_value = (output, None)
+    actual = redis_enterprise.GetDatabaseMemorySize(mock_vm)
+    self.assertEqual(51460000000, actual)
+
+
 class ResultParserTest(pkb_common_test_case.PkbCommonTestCase):
 
-  def GetRedisEnterpriseOutput(self, file: str) -> str:
-    path = os.path.join(os.path.dirname(__file__), '..', 'data', file)
-    with open(path) as f:
-      return f.read()
-
   def testParseResults(self):
-    output = self.GetRedisEnterpriseOutput('redis_enterprise_output.txt')
-    actual = redis_enterprise.ParseResult(output)
-    # DB 4 has 5 elements in the time series so final length is 5 instead of 10.
-    self.assertCountEqual(actual.latencies, [
-        895.4008497116798,
-        889.6032863841133,
-        898.4151736901495,
-        857.8283013278468,
-        825.5712436699047,
+    output = GetRedisEnterpriseOutput('redis_enterprise_output.txt')
+    actual = redis_enterprise.ParseResults(output)
+    self.assertCountEqual([r.latency_usec for r in actual], [
+        254.38488247733775,
+        262.05762827864845,
+        263.3261959721339,
     ])
-    self.assertCountEqual(actual.throughputs, [
-        423465.0,
-        423435.0,
-        426084.0,
-        435096.0,
-        441108.0,
+    self.assertCountEqual([r.throughput for r in actual], [
+        1420515,
+        1413081,
+        1419066,
     ])
 
 

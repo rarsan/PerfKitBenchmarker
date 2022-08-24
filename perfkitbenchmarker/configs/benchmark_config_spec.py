@@ -40,6 +40,7 @@ from perfkitbenchmarker import spark_service
 from perfkitbenchmarker import sql_engine_utils
 from perfkitbenchmarker import static_virtual_machine
 from perfkitbenchmarker import virtual_machine
+from perfkitbenchmarker.configs import freeze_restore_spec
 from perfkitbenchmarker.configs import option_decoders
 from perfkitbenchmarker.configs import spec
 from perfkitbenchmarker.dpb_service import BaseDpbService
@@ -510,13 +511,13 @@ class _StaticVmListDecoder(option_decoders.ListDecoder):
         default=list, item_decoder=_StaticVmDecoder(), **kwargs)
 
 
-class _RelationalDbSpec(spec.BaseSpec):
+class _RelationalDbSpec(freeze_restore_spec.FreezeRestoreSpec):
   """Configurable options of a database service."""
 
   def __init__(self, component_full_name, flag_values=None, **kwargs):
     super(_RelationalDbSpec, self).__init__(
         component_full_name, flag_values=flag_values, **kwargs)
-    # TODO(ferneyhough): This is a lot of boilerplate, and is repeated
+    # TODO(user): This is a lot of boilerplate, and is repeated
     # below in VmGroupSpec. See if some can be consolidated. Maybe we can
     # specify a VmGroupSpec instead of both vm_spec and disk_spec.
     ignore_package_requirements = (
@@ -628,13 +629,13 @@ class _RelationalDbSpec(spec.BaseSpec):
       flag_values: flags.FlagValues. Runtime flags that may override the
         provided config values.
     """
-    # TODO(ferneyhough): Add flags for db_disk_spec.
+    # TODO(user): Add flags for db_disk_spec.
     # Currently the only way to modify the disk spec of the
     # db is to change the benchmark spec in the benchmark source code
     # itself.
     super(_RelationalDbSpec, cls)._ApplyFlags(config_values, flag_values)
 
-    # TODO(jerlawson): Rename flags 'managed_db_' -> 'db_'.
+    # TODO(user): Rename flags 'managed_db_' -> 'db_'.
     has_db_machine_type = flag_values['managed_db_machine_type'].present
     has_db_cpus = flag_values['managed_db_cpus'].present
     has_db_memory = flag_values['managed_db_memory'].present
