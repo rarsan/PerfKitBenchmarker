@@ -20,6 +20,7 @@ import logging
 import math
 import os
 import pathlib
+import random
 import re
 import time
 from typing import Any, Dict, List, Optional, Text, Tuple, Union
@@ -38,13 +39,13 @@ APT_PACKAGES = ('build-essential autoconf automake libpcre3-dev '
                 'libevent-dev pkg-config zlib1g-dev libssl-dev')
 YUM_PACKAGES = (
     'zlib-devel pcre-devel libmemcached-devel libevent-devel openssl-devel')
-MEMTIER_RESULTS = '/tmp/memtier_results'
-
+MEMTIER_RESULTS = 'memtier_results'
+TMP_FOLDER = '/tmp'
 _LOAD_NUM_PIPELINES = 100  # Arbitrarily high for loading
 _WRITE_ONLY = '1:0'
 CPU_TOLERANCE = 0.05
 WARM_UP_SECONDS = 360
-JSON_OUT_FILE = '/tmp/json_data'
+JSON_OUT_FILE = 'json_data'
 # upper limit to pipelines when binary searching for latency-capped throughput.
 # arbitrarily chosen for large latency.
 MAX_PIPELINES_COUNT = 5000
@@ -144,6 +145,11 @@ MEMTIER_TIME_SERIES = flags.DEFINE_bool(
     'memtier_time_series', False, 'Include per second time series output '
     'for ops and max latency. This greatly increase the number of samples.')
 
+MEMTIER_SERVER_SELECTION = flags.DEFINE_enum(
+    'memtier_server_selection', 'uniform', ['uniform', 'random'],
+    'Distribution pattern for server instance port to redis memtier clients.'
+    'Supported distributions are uniform and random. Defaults to uniform.')
+
 
 def YumInstall(vm):
   """Installs the memtier package on the VM."""
@@ -184,7 +190,7 @@ def AptUninstall(vm):
 
 def BuildMemtierCommand(
     server: Optional[str] = None,
-    port: Optional[str] = None,
+    port: Optional[int] = None,
     protocol: Optional[str] = None,
     clients: Optional[int] = None,
     threads: Optional[int] = None,
@@ -240,7 +246,7 @@ def BuildMemtierCommand(
 
 def Load(client_vm,
          server_ip: str,
-         server_port: str,
+         server_port: int,
          server_password: Optional[str] = None) -> None:
   """Preload the server with data."""
   load_key_maximum = (
@@ -265,7 +271,7 @@ def Load(client_vm,
 def RunOverAllClientVMs(
     client_vms,
     server_ip: str,
-    ports: List[str],
+    ports: List[int],
     pipeline,
     threads,
     clients,
@@ -287,8 +293,14 @@ def RunOverAllClientVMs(
    List of memtier results.
   """
 
-  def DistributeClientsToPorts(port):
-    client_index = int(port) % len(ports) % len(client_vms)
+  def DistributeClientsToPorts(port_index):
+    client_index = port_index % len(client_vms)
+
+    if MEMTIER_SERVER_SELECTION.value == 'uniform':
+      port = ports[port_index]
+    else:
+      port = random.choice(ports)
+
     vm = client_vms[client_index]
     return _Run(
         vm=vm,
@@ -297,9 +309,11 @@ def RunOverAllClientVMs(
         threads=threads,
         pipeline=pipeline,
         clients=clients,
-        password=password)
+        password=password,
+        unique_id=str(port_index))
 
-  results = vm_util.RunThreaded(DistributeClientsToPorts, ports)
+  results = vm_util.RunThreaded(DistributeClientsToPorts,
+                                list(range(len(ports))))
 
   return results
 
@@ -307,7 +321,7 @@ def RunOverAllClientVMs(
 def RunOverAllThreadsPipelinesAndClients(
     client_vms,
     server_ip: str,
-    server_ports: List[str],
+    server_ports: List[int],
     password: Optional[str] = None) -> List[sample.Sample]:
   """Runs memtier over all pipeline and thread combinations."""
   samples = []
@@ -344,7 +358,7 @@ class MemtierBinarySearchParameters:
 def MeasureLatencyCappedThroughput(
     client_vm,
     server_ip: str,
-    server_port: str,
+    server_port: int,
     password: Optional[str] = None) -> List[sample.Sample]:
   """Runs memtier to find the maximum throughput under a latency cap."""
   samples = []
@@ -367,10 +381,11 @@ def MeasureLatencyCappedThroughput(
           'Binary search for latency capped throughput.\n'
           '\tMemtier ops throughput: %s'
           '\tmemtier 95th percentile latency: %s'
-          '\tupper bound: %s'
-          '\tlower bound: %s', result.ops_per_sec, result.p95_latency,
+          '\tlower bound: %s'
+          '\tupper bound: %s', result.ops_per_sec, result.p95_latency,
           parameters.lower_bound, parameters.upper_bound)
-      if result.ops_per_sec > current_max_result.ops_per_sec:
+      if (result.ops_per_sec > current_max_result.ops_per_sec
+          and result.p95_latency <= MEMTIER_LATENCY_CAP.value):
         current_max_result = result
         current_metadata = GetMetadata(
             clients=parameters.clients,
@@ -513,7 +528,7 @@ def RunGetLatencyAtCpu(cloud_instance, client_vms):
       'this configuration and CPU utilization.')
 
 
-def _GetSingleThreadedLatency(client_vm, server_ip: str, server_port: str,
+def _GetSingleThreadedLatency(client_vm, server_ip: str, server_port: int,
                               password: str) -> 'MemtierResult':
   """Wait for background run to stabilize then send single threaded request."""
   time.sleep(300)
@@ -529,21 +544,28 @@ def _GetSingleThreadedLatency(client_vm, server_ip: str, server_port: str,
 
 def _Run(vm,
          server_ip: str,
-         server_port: str,
+         server_port: int,
          threads: int,
          pipeline: int,
          clients: int,
-         password: Optional[str] = None) -> 'MemtierResult':
+         password: Optional[str] = None,
+         unique_id: Optional[str] = None) -> 'MemtierResult':
   """Runs the memtier benchmark on the vm."""
   logging.info(
       'Start benchmarking redis/memcached using memtier:\n'
       '\tmemtier client: %s'
       '\tmemtier threads: %s'
       '\tmemtier pipeline, %s', clients, threads, pipeline)
-  results_file = pathlib.PosixPath(f'{MEMTIER_RESULTS}_{server_port}')
-  vm.RemoteCommand(f'rm -f {results_file}')
+
+  file_name_suffix = '_'.join(filter(None, [str(server_port), unique_id]))
+  memtier_results_file_name = '_'.join([MEMTIER_RESULTS, file_name_suffix])
+  memtier_results_file = pathlib.PosixPath(
+      f'{TMP_FOLDER}/{memtier_results_file_name}')
+  vm.RemoteCommand(f'rm -f {memtier_results_file}')
+
+  json_results_file_name = '_'.join([JSON_OUT_FILE, file_name_suffix])
   json_results_file = (
-      pathlib.PosixPath(f'{JSON_OUT_FILE}_{server_port}')
+      pathlib.PosixPath(f'{TMP_FOLDER}/{json_results_file_name}')
       if MEMTIER_TIME_SERIES.value else None)
   vm.RemoteCommand(f'rm -f {json_results_file}')
   # Specify one of run requests or run duration.
@@ -570,19 +592,18 @@ def _Run(vm,
       test_time=test_time,
       requests=requests,
       password=password,
-      outfile=results_file,
+      outfile=memtier_results_file,
       cluster_mode=MEMTIER_CLUSTER_MODE.value,
       json_out_file=json_results_file)
   vm.RemoteCommand(cmd)
 
-  output_path = os.path.join(vm_util.GetTempDir(),
-                             f'memtier_results_{server_port}')
+  output_path = os.path.join(vm_util.GetTempDir(), memtier_results_file_name)
   vm_util.IssueCommand(['rm', '-f', output_path])
-  vm.PullFile(vm_util.GetTempDir(), results_file)
+  vm.PullFile(vm_util.GetTempDir(), memtier_results_file)
 
   time_series_json = None
   if json_results_file:
-    json_path = os.path.join(vm_util.GetTempDir(), f'json_data_{server_port}')
+    json_path = os.path.join(vm_util.GetTempDir(), json_results_file_name)
     vm_util.IssueCommand(['rm', '-f', json_path])
     vm.PullFile(vm_util.GetTempDir(), json_results_file)
     with open(json_path, 'r') as ts_json:

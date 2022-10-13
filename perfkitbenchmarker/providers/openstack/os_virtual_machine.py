@@ -390,14 +390,15 @@ class OpenStackVirtualMachine(virtual_machine.BaseVirtualMachine):
         floating_ip.floating_ip_address))
     return floating_ip
 
-  def CreateScratchDisk(self, disk_spec):
+  def CreateScratchDisk(self, _, disk_spec):
     disks_names = ('%s_data_%d_%d'
                    % (self.name, len(self.scratch_disks), i)
                    for i in range(disk_spec.num_striped_disks))
     disks = [os_disk.OpenStackDisk(disk_spec, name, self.zone)
              for name in disks_names]
 
-    self._CreateScratchDiskFromDisks(disk_spec, disks)
+    scratch_disk = self._CreateScratchDiskFromDisks(disk_spec, disks)
+    self._PrepareScratchDisk(scratch_disk, disk_spec)
 
   def GetResourceMetadata(self):
     """Returns a dict containing metadata about the VM.

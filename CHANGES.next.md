@@ -73,19 +73,21 @@
 -   Add messaging service latency benchmark (for GCP PubSub, AWS SQS & Azure
     Service Bus).
 -   Add Intel perfspect as a new trace
--   Add Ubuntu 22.04 support for GCP, AWS and Azure Providers.
--   Add support for Rocky Linux 8, CentOS Stream 8, and CentOS Stream 9 on GCP
-    and AWS Providers.
+-   Add Ubuntu 22.04 support for GCP, AWS, and Azure Providers.
+-   Add support for Rocky Linux 8 and 9 on GCP, AWS, and Azure Providers.
+-   Add support for CentOS Stream 8, CentOS Stream 9 on GCP and AWS Providers.
 -   Add support for chbench using s64da.
 -   Add sysbench_memory benchmark.
 -   Add support for RHEL 9 on AWS, Azure, and GCP.
--   Add GCP Optimized Rocky Linux 8 OS.
+-   Add GCP optimized Rocky Linux 8 and 9 OSes.
 -   Add mtu to os_metadata in linux_virtual_machine.
 -   Add support for TPC-DS/H benchmarks on AWS EMR Serverless.
 -   Add dpb_sparksql_serverless_benchmark, which submits one job for each
     TPC-DS/H query and measures the whole job execution time, instead of only
     the query run time.
-    Add Intel MPI benchmark.
+-   Add Intel MPI benchmark.
+-   Add support for Azure ARM VMs.
+-   Add an HTTP endpoint polling utility & incorporate it into app_service.
 
 ### Enhancements:
 
@@ -177,6 +179,9 @@
     --google_bigtable_client_version and simplify dependency management.
 -   Support setting --dpb_dataflow_additional_args and --dpb_dataflow_timeout
     for dpb_dataflow_provider.
+-   Add support for T2A (ARM) VMs on GCE.
+-   Add `--dpb_job_poll_interval_secs` flag to control job polling frequency in DPB
+    benchmarks.
 
 ### Bug fixes and maintenance updates:
 

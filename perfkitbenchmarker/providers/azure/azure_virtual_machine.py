@@ -105,6 +105,12 @@ _SCHEDULED_EVENTS_CMD_WIN = ('Invoke-RestMethod -Headers @{"Metadata"="true"} '
 # Recognized Errors
 _OS_PROVISIONING_TIMED_OUT = 'OSProvisioningTimedOut'
 
+# Map to neoverse-n1
+AZURE_ARM_TYPES = [
+    r'(Standard_D[0-9]+pl?d?s_v5)',
+    r'(Standard_E[0-9]+pd?s_v5)',
+]
+
 
 class AzureVmSpec(virtual_machine.BaseVmSpec):
   """Object containing the information needed to create a AzureVirtualMachine.
@@ -492,6 +498,13 @@ class AzureDedicatedHost(resource.BaseResource):
       return False
 
 
+def _MachineTypeIsArm(machine_type):
+  """Check if the machine type uses ARM."""
+  return any(
+      re.search(machine_series, machine_type)
+      for machine_series in AZURE_ARM_TYPES)
+
+
 class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
   """Object representing an Azure Virtual Machine."""
   CLOUD = providers.AZURE
@@ -530,6 +543,10 @@ class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
                         self.public_ip.name, vm_spec.accelerated_networking,
                         self.network.nsg)
     self.storage_account = self.network.storage_account
+    arm_arch = 'neoverse-n1' if _MachineTypeIsArm(self.machine_type) else None
+    if arm_arch:
+      self.host_arch = arm_arch
+      self.is_aarch64 = True
     if vm_spec.image:
       self.image = vm_spec.image
     elif self.machine_type in _MACHINE_TYPES_ONLY_SUPPORT_GEN2_IMAGES:
@@ -537,6 +554,11 @@ class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
         self.image = type(self).GEN2_IMAGE_URN
       else:
         raise errors.Benchmarks.UnsupportedConfigError('No Azure gen2 image.')
+    elif arm_arch:
+      if hasattr(type(self), 'ARM_IMAGE_URN'):
+        self.image = type(self).ARM_IMAGE_URN
+      else:
+        raise errors.Benchmarks.UnsupportedConfigError('No Azure ARM image.')
     else:
       self.image = type(self).IMAGE_URN
 
@@ -751,7 +773,7 @@ class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
     self.internal_ip = self.nic.GetInternalIP()
     self.ip_address = self.public_ip.GetIPAddress()
 
-  def CreateScratchDisk(self, disk_spec):
+  def CreateScratchDisk(self, _, disk_spec):
     """Create a VM's scratch disk.
 
     Args:
@@ -787,7 +809,8 @@ class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
       data_disk.disk_number = disk_number
       disks.append(data_disk)
 
-    self._CreateScratchDiskFromDisks(disk_spec, disks)
+    scratch_disk = self._CreateScratchDiskFromDisks(disk_spec, disks)
+    self._PrepareScratchDisk(scratch_disk, disk_spec)
 
   def InstallCli(self):
     """Installs the Azure cli and credentials on this Azure vm."""
@@ -891,30 +914,37 @@ class Debian11BasedAzureVirtualMachine(AzureVirtualMachine,
   # From https://wiki.debian.org/Cloud/MicrosoftAzure
   GEN2_IMAGE_URN = 'Debian:debian-11:11-gen2:latest'
   IMAGE_URN = 'Debian:debian-11:11:latest'
+  ARM_IMAGE_URN = 'Debian:debian-11:11-backports-arm64:latest'
 
 
 class Ubuntu1604BasedAzureVirtualMachine(AzureVirtualMachine,
                                          linux_virtual_machine.Ubuntu1604Mixin):
   GEN2_IMAGE_URN = 'Canonical:UbuntuServer:16_04-lts-gen2:latest'
   IMAGE_URN = 'Canonical:UbuntuServer:16.04-LTS:latest'
+  # No ARM image when running
+  # az vm image list --architecture Arm64 --all --publisher canonical
+  # | grep 16_04
 
 
 class Ubuntu1804BasedAzureVirtualMachine(AzureVirtualMachine,
                                          linux_virtual_machine.Ubuntu1804Mixin):
   GEN2_IMAGE_URN = 'Canonical:UbuntuServer:18_04-lts-gen2:latest'
   IMAGE_URN = 'Canonical:UbuntuServer:18.04-LTS:latest'
+  ARM_IMAGE_URN = 'Canonical:UbuntuServer:18_04-lts-arm64:latest'
 
 
 class Ubuntu2004BasedAzureVirtualMachine(AzureVirtualMachine,
                                          linux_virtual_machine.Ubuntu2004Mixin):
   GEN2_IMAGE_URN = 'Canonical:0001-com-ubuntu-server-focal:20_04-lts-gen2:latest'
   IMAGE_URN = 'Canonical:0001-com-ubuntu-server-focal:20_04-lts:latest'
+  ARM_IMAGE_URN = 'Canonical:0001-com-ubuntu-server-focal:20_04-lts-arm64:latest'
 
 
 class Ubuntu2204BasedAzureVirtualMachine(AzureVirtualMachine,
                                          linux_virtual_machine.Ubuntu2204Mixin):
   GEN2_IMAGE_URN = 'Canonical:0001-com-ubuntu-server-jammy:22_04-lts-gen2:latest'
   IMAGE_URN = 'Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest'
+  ARM_IMAGE_URN = 'Canonical:0001-com-ubuntu-server-jammy:22_04-lts-arm64:latest'
 
 
 class Rhel7BasedAzureVirtualMachine(AzureVirtualMachine,
@@ -946,6 +976,22 @@ class CentOs8BasedAzureVirtualMachine(AzureVirtualMachine,
   GEN2_IMAGE_URN = 'OpenLogic:CentOS-LVM:8-lvm-gen2:latest'
   IMAGE_URN = 'OpenLogic:CentOS-LVM:8-lvm:latest'
 
+
+# Requires enabling for your subscription:
+# https://portal.azure.com/#view/Microsoft_Azure_Marketplace/LegalTermsSkuProgrammaticAccessBlade/legalTermsSkuProgrammaticAccessData~/%7B%22product%22%3A%7B%22publisherId%22%3A%22erockyenterprisesoftwarefoundationinc1653071250513%22%2C%22offerId%22%3A%22rockylinux%22%2C%22planId%22%3A%22free%22%2C%22standardContractAmendmentsRevisionId%22%3Anull%2C%22isCspEnabled%22%3Atrue%7D%7D
+class RockyLinux8BasedAzureVirtualMachine(AzureVirtualMachine,
+                                          linux_virtual_machine.RockyLinux8Mixin
+                                         ):
+  # TODO(pclay): Update to rockylinux-8:latest if that is ever so-named.
+  IMAGE_URN = 'erockyenterprisesoftwarefoundationinc1653071250513:rockylinux:free:8.6.0'
+
+
+# Requires enabling for your subscription:
+# https://portal.azure.com/#view/Microsoft_Azure_Marketplace/LegalTermsSkuProgrammaticAccessBlade/legalTermsSkuProgrammaticAccessData~/%7B%22product%22%3A%7B%22publisherId%22%3A%22erockyenterprisesoftwarefoundationinc1653071250513%22%2C%22offerId%22%3A%22rockylinux%22%2C%22planId%22%3A%22free%22%2C%22standardContractAmendmentsRevisionId%22%3Anull%2C%22isCspEnabled%22%3Atrue%7D%7D
+class RockyLinux9BasedAzureVirtualMachine(AzureVirtualMachine,
+                                          linux_virtual_machine.RockyLinux9Mixin
+                                         ):
+  IMAGE_URN = 'erockyenterprisesoftwarefoundationinc1653071250513:rockylinux-9:rockylinux-9:latest'
 
 # TODO(user): Add Fedora CoreOS when available:
 #   https://docs.fedoraproject.org/en-US/fedora-coreos/provisioning-azure/

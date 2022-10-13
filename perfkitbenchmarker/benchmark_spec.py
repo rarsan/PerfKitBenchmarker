@@ -52,7 +52,6 @@ from perfkitbenchmarker import virtual_machine
 from perfkitbenchmarker import vm_util
 from perfkitbenchmarker import vpn_service
 from perfkitbenchmarker.configs import freeze_restore_spec
-from perfkitbenchmarker.providers.gcp import gcp_spanner
 import six
 from six.moves import range
 import six.moves._thread
@@ -288,8 +287,10 @@ class BenchmarkSpec(object):
       self.vms_to_boot['master_group'] = master_group_spec
 
   def ConstructRelationalDb(self):
-    """Create the relational db and create groups for its vms."""
+    """Creates the relational db and create groups for its vms."""
     if self.config.relational_db is None:
+      return
+    if self._InitializeFromSpec('relational_db', self.config.relational_db):
       return
     cloud = self.config.relational_db.cloud
     is_managed_db = self.config.relational_db.is_managed_db
@@ -297,6 +298,9 @@ class BenchmarkSpec(object):
     providers.LoadProvider(cloud)
     relational_db_class = (
         relational_db.GetRelationalDbClass(cloud, is_managed_db, engine))
+    if not self.config.relational_db.engine_version:
+      self.config.relational_db.engine_version = (
+          relational_db_class.GetDefaultEngineVersion(engine))
     self.relational_db = relational_db_class(self.config.relational_db)
 
   def ConstructNonRelationalDb(self) -> None:
@@ -314,19 +318,6 @@ class BenchmarkSpec(object):
     non_relational_db_class = non_relational_db.GetNonRelationalDbClass(
         service_type)
     self.non_relational_db = non_relational_db_class.FromSpec(db_spec)
-
-  def ConstructSpanner(self) -> None:
-    """Initializes the spanner instance."""
-    spanner_spec: gcp_spanner.SpannerSpec = self.config.spanner
-    if not spanner_spec:
-      return
-    # Initialization from restore spec
-    if self._InitializeFromSpec('spanner', spanner_spec):
-      return
-    # Initialization from benchmark config spec
-    logging.info('Constructing spanner instance with spec: %s.', spanner_spec)
-    spanner_class = gcp_spanner.GetSpannerClass(spanner_spec.service_type)
-    self.spanner = spanner_class.FromSpec(spanner_spec)
 
   def ConstructTpuGroup(self, group_spec):
     """Constructs the BenchmarkSpec's cloud TPU objects."""
@@ -736,8 +727,6 @@ class BenchmarkSpec(object):
       self.relational_db.Create(restore=should_restore)
     if self.non_relational_db:
       self.non_relational_db.Create(restore=should_restore)
-    if self.spanner:
-      self.spanner.Create(restore=should_restore)
     if self.tpus:
       vm_util.RunThreaded(lambda tpu: tpu.Create(), self.tpus)
     if self.edw_service:
@@ -963,11 +952,11 @@ class BenchmarkSpec(object):
     # Prepare vm scratch disks:
     if any((spec.disk_type == disk.LOCAL for spec in vm.disk_specs)):
       vm.SetupLocalDisks()
-    for disk_spec in vm.disk_specs:
+    for disk_spec_id, disk_spec in enumerate(vm.disk_specs):
       if disk_spec.disk_type == disk.RAM:
         vm.CreateRamDisk(disk_spec)
       else:
-        vm.CreateScratchDisk(disk_spec)
+        vm.CreateScratchDisk(disk_spec_id, disk_spec)
       # TODO(user): Simplify disk logic.
       if disk_spec.num_striped_disks > 1:
         # scratch disks has already been created and striped together.

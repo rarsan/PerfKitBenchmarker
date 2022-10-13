@@ -20,6 +20,7 @@ at https://cloud.google.com/dataproc/
 import datetime
 import json
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from absl import flags
@@ -196,6 +197,10 @@ class GcpDpbDataproc(GcpDpbBaseDataproc):
     if FLAGS.gcp_dataproc_image:
       cmd.flags['image'] = FLAGS.gcp_dataproc_image
 
+    # http://cloud/dataproc/docs/guides/profiling#enable_profiling
+    if FLAGS.gcloud_scopes:
+      cmd.flags['scopes'] = ','.join(re.split(r'[,; ]', FLAGS.gcloud_scopes))
+
     if FLAGS.dpb_cluster_properties:
       cmd.flags['properties'] = ','.join(FLAGS.dpb_cluster_properties)
 
@@ -264,6 +269,7 @@ class GcpDpbDataproc(GcpDpbBaseDataproc):
                 job_arguments=None,
                 job_files=None,
                 job_jars=None,
+                job_py_files=None,
                 job_type=None,
                 properties=None):
     """See base class."""
@@ -295,6 +301,8 @@ class GcpDpbDataproc(GcpDpbBaseDataproc):
       cmd.flags['files'] = ','.join(job_files)
     if job_jars:
       cmd.flags['jars'] = ','.join(job_jars)
+    if job_py_files:
+      cmd.flags['py-files'] = ','.join(job_py_files)
 
     # Dataproc gives as stdout an object describing job execution.
     # Its stderr contains a mix of the stderr of the job, and the
@@ -414,6 +422,7 @@ class GcpDpbDataprocServerless(GcpDpbBaseDataproc):
                 job_arguments=None,
                 job_files=None,
                 job_jars=None,
+                job_py_files=None,
                 job_type=None,
                 properties=None):
     """See base class."""
@@ -448,6 +457,8 @@ class GcpDpbDataprocServerless(GcpDpbBaseDataproc):
       cmd.flags['files'] = ','.join(job_files)
     if job_jars:
       cmd.flags['jars'] = ','.join(job_jars)
+    if job_py_files:
+      cmd.flags['py-files'] = ','.join(job_py_files)
 
     if FLAGS.gce_network_name:
       cmd.flags['network'] = FLAGS.gce_network_name

@@ -12,45 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Module containing class for GCP's Dataflow service.
+
 Use this module for running Dataflow jobs from pre-built Dataflow templates
-such as https://cloud.google.com/dataflow/docs/guides/templates/provided-templates
+such as
+https://cloud.google.com/dataflow/docs/guides/templates/provided-templates.
 
 No Clusters can be created or destroyed, since it is a managed solution
 See details at: https://cloud.google.com/dataflow/
 """
 
-import os
-import re
-import time
+import datetime
 import json
 import logging
-import datetime
 
 from absl import flags
-from perfkitbenchmarker import beam_benchmark_helper
 from perfkitbenchmarker import errors
 from perfkitbenchmarker import providers
-from perfkitbenchmarker import vm_util
 from perfkitbenchmarker.providers.gcp import gcp_dpb_dataflow
 from perfkitbenchmarker.providers.gcp import util
 
-# flags.DEFINE_string('dpb_df_template_gcs_location', None,
-#                   'GCS URI path for pre-built Dataflow template to run.'
-#                   'Template must be available before running your pipeline.'
-#                   'e.g. gs://dataflow-templates/latest/PubSub_To_BigQuery')
-# flags.DEFINE_string('dpb_df_template_input_subscription', None,
-#                   'Cloud Pub/Sub subscription ID for Dataflow template to ingest data from.'
-#                   'Data must be pre-populated in subscription before running your pipeline.'
-#                   'e.g. projects/<project>/subscriptions/<subscription>')
-# flags.DEFINE_string('dpb_df_template_output_ptransform', None,
-#                   'Pipeline PTransform from which to retrieve Dataflow output throughput.'
-#                   'e.g. WriteSuccessfulRecords/StreamingInserts/StreamingWriteTables/StreamingWrite')
-# flags.DEFINE_list('dpb_df_template_additional_args', [], 'Additional arguments '
-#                   'which should be passed to job.')
-
+# Refer to flags with prefix 'dpb_dataflow_template' defined in gcp/flags.py
 FLAGS = flags.FLAGS
 
-DATAFLOW_JOB_TIMEOUT = 3600   # 60 minutes
 
 class GcpDpbDataflowTemplate(gcp_dpb_dataflow.GcpDpbDataflow):
   """Object representing GCP Dataflow service for running job templates."""
@@ -67,7 +50,7 @@ class GcpDpbDataflowTemplate(gcp_dpb_dataflow.GcpDpbDataflow):
   @staticmethod
   def CheckPrerequisites(benchmark_config):
     del benchmark_config  # Unused
-    if not FLAGS.dpb_df_template_gcs_location:
+    if not FLAGS.dpb_dataflow_template_gcs_location:
       raise errors.Config.InvalidValue('Template GCS location missing.')
 
   def Create(self):
@@ -78,19 +61,22 @@ class GcpDpbDataflowTemplate(gcp_dpb_dataflow.GcpDpbDataflow):
     """See base class."""
     pass
 
+  # TODO(odiego): Update signature to match parent and BaseDpbService class
   def SubmitJob(
       self,
       template_gcs_location=None,
       job_poll_interval=None,
       job_arguments=None,
-      job_input_sub = None):
-    
+      job_input_sub=None):
+
     worker_machine_type = self.spec.worker_group.vm_spec.machine_type
     num_workers = self.spec.worker_count
     max_workers = self.spec.worker_count
 
     now = datetime.datetime.now()
-    job_name = template_gcs_location.split('/')[-1] + '_' + now.strftime("%Y%m%d_%H%M%S")
+    job_name = '_'.join([
+        template_gcs_location.split('/')[-1],
+        now.strftime('%Y%m%d_%H%M%S')])
     region = util.GetRegionFromZone(FLAGS.dpb_service_zone)
 
     cmd = util.GcloudCommand(self, 'dataflow', 'jobs', 'run', job_name)
@@ -107,20 +93,20 @@ class GcpDpbDataflowTemplate(gcp_dpb_dataflow.GcpDpbDataflow):
         'format': 'json',
     }
 
-    stdout, stderr, retcode = cmd.Issue()
+    stdout, _, _ = cmd.Issue()
 
     # Parse output to retrieve submitted job ID
     try:
       result = json.loads(stdout)
       self.job_id = result['id']
-    except Exception as err:
-      logging.error("Failed to parse Dataflow job ID: {}".format(err))
+    except Exception:
+      logging.error('Failed to parse Dataflow job ID.', exc_info=True)
       raise
 
     logging.info('Dataflow job ID: %s', self.job_id)
-    # TODO: return JobResult() with pre-computed time stats
-    return self._WaitForJob(job_input_sub, DATAFLOW_JOB_TIMEOUT, job_poll_interval)
-    return
+    # TODO(user): return JobResult() with pre-computed time stats.
+    return self._WaitForJob(
+        job_input_sub, FLAGS.dpb_dataflow_timeout, job_poll_interval)
 
   def _GetCompletedJob(self, job_id):
     """See base class."""
@@ -130,18 +116,20 @@ class GcpDpbDataflowTemplate(gcp_dpb_dataflow.GcpDpbDataflow):
     # otherwise keep waiting
     if not self.input_sub_empty:
       backlog_size = self.GetSubscriptionBacklogSize(job_input_sub)
-      logging.info("Polling: Backlog size of subscription {} is {}".format(job_input_sub, backlog_size))
+      logging.info('Polling: Backlog size of subscription %s is %s',
+                   job_input_sub, backlog_size)
       if backlog_size == 0:
         self.input_sub_empty = True
         # Start draining job once input subscription is empty
-        cmd = util.GcloudCommand(self, 'dataflow', 'jobs', 'drain', self.job_id)
+        cmd = util.GcloudCommand(
+            self, 'dataflow', 'jobs', 'drain', self.job_id)
         cmd.flags = {
             'project': self.project,
             'region': util.GetRegionFromZone(FLAGS.dpb_service_zone),
             'format': 'json',
         }
-        logging.info("Polling: Draining job {} ...".format(self.job_id))
-        stdout, stderr, retcode = cmd.Issue()
+        logging.info('Polling: Draining job %s ...', self.job_id)
+        stdout, _, _ = cmd.Issue()
       else:
         return None
 
@@ -153,17 +141,13 @@ class GcpDpbDataflowTemplate(gcp_dpb_dataflow.GcpDpbDataflow):
           'region': util.GetRegionFromZone(FLAGS.dpb_service_zone),
           'format': 'json',
       }
-      stdout, stderr, retcode = cmd.Issue()
+      stdout, _, _ = cmd.Issue()
       job_state = json.loads(stdout)['state']
-      logging.info("Polling: Job state is {} ".format(job_state))
-      if job_state == "Drained":
-          self.job_drained = True
+      logging.info('Polling: Job state is %s', job_state)
+      if job_state == 'Drained':
+        self.job_drained = True
       else:
-          return None
+        return None
 
-    # TODO: calculate run_time, pending_time as args for JobResult()
-    # started_on = result['JobRun']['StartedOn']
-    # completed_on = result['JobRun']['CompletedOn']
-    # execution_time = result['JobRun']['ExecutionTime']
-    # return dpb_service.JobResult()
+    # TODO(user): calculate run_time, pending_time as args for JobResult()
     return True

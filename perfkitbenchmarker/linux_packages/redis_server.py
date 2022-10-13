@@ -11,8 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
 """Module containing redis installation and cleanup functions."""
 
 import logging
@@ -48,21 +46,21 @@ _ENABLE_SNAPSHOTS = flags.DEFINE_bool(
     'redis_server_enable_snapshots', False,
     'If true, uses the default redis snapshot policy.')
 _NUM_PROCESSES = flags.DEFINE_integer(
-    'redis_total_num_processes', 1,
+    'redis_total_num_processes',
+    1,
     'Total number of redis server processes. Useful when running with a redis '
     'version lower than 6.',
     lower_bound=1)
 _EVICTION_POLICY = flags.DEFINE_enum(
-    'redis_eviction_policy', RedisEvictionPolicy.NOEVICTION,
-    [RedisEvictionPolicy.NOEVICTION, RedisEvictionPolicy.ALLKEYS_LRU,
-     RedisEvictionPolicy.VOLATILE_LRU, RedisEvictionPolicy.ALLKEYS_RANDOM,
-     RedisEvictionPolicy.VOLATILE_RANDOM, RedisEvictionPolicy.VOLATILE_TTL],
-    'Redis eviction policy when maxmemory limit is reached. This requires '
+    'redis_eviction_policy', RedisEvictionPolicy.NOEVICTION, [
+        RedisEvictionPolicy.NOEVICTION, RedisEvictionPolicy.ALLKEYS_LRU,
+        RedisEvictionPolicy.VOLATILE_LRU, RedisEvictionPolicy.ALLKEYS_RANDOM,
+        RedisEvictionPolicy.VOLATILE_RANDOM, RedisEvictionPolicy.VOLATILE_TTL
+    ], 'Redis eviction policy when maxmemory limit is reached. This requires '
     'running clients with larger amounts of data than Redis can hold.')
 REDIS_SIMULATE_AOF = flags.DEFINE_bool(
     'redis_simulate_aof', False, 'If true, simulate usage of '
     'disks on the server for aof backups. ')
-
 
 # Default port for Redis
 _DEFAULT_PORT = 6379
@@ -154,6 +152,11 @@ def _BuildStartCommand(vm, port: int) -> str:
     cmd_args.append(f'--server_cpulist {cpu_affinity}')
   if _EVICTION_POLICY.value:
     cmd_args.append(f'--maxmemory-policy {_EVICTION_POLICY.value}')
+
+  # Set maxmemory flag for each redis instance. Total memory for all of the
+  # server instances combined should be 90% of server VM's total memory.
+  max_memory_per_instance = int(vm.total_memory_kb * 0.9 / _NUM_PROCESSES.value)
+  cmd_args.append(f'--maxmemory {max_memory_per_instance}kb')
   return cmd.format(redis_dir=redis_dir, args=' '.join(cmd_args))
 
 
@@ -170,7 +173,9 @@ def Start(vm) -> None:
                                       'vm.overcommit_memory = 1\n'
                                       'net.core.somaxconn = 65535\n'
                                       '" | sudo tee -a /etc/sysctl.conf')
-  commit_sysvtl = vm.TryRemoteCommand('sudo /usr/sbin/sysctl -p')
+  # /usr/sbin/sysctl is not applicable on certain distros.
+  commit_sysvtl = vm.TryRemoteCommand(
+      'sudo /usr/sbin/sysctl -p || sudo sysctl -p')
   if not (update_sysvtl and commit_sysvtl):
     logging.info('Fail to optimize overcommit_memory and socket connections.')
   for port in GetRedisPorts():

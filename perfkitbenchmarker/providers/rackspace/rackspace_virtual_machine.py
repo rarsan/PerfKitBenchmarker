@@ -346,7 +346,7 @@ class RackspaceVirtualMachine(virtual_machine.BaseVirtualMachine):
     super(RackspaceVirtualMachine, self).OnStartup()
     self.boot_device = self._GetBootDevice()
 
-  def CreateScratchDisk(self, disk_spec):
+  def CreateScratchDisk(self, _, disk_spec):
     """Creates a VM's scratch disk that will be used for a benchmark.
 
     Given a data_disk_type it will either create a corresponding Disk object,
@@ -427,7 +427,9 @@ class RackspaceVirtualMachine(virtual_machine.BaseVirtualMachine):
           disk_spec, volume_name, self.zone, self.project,
           media=disk_spec.disk_type)
       scratch_disks.append(scratch_disk)
-    self._CreateScratchDiskFromDisks(disk_spec, scratch_disks)
+
+    scratch_disk = self._CreateScratchDiskFromDisks(disk_spec, scratch_disks)
+    self._PrepareScratchDisk(scratch_disk, disk_spec)
 
   def _GetFreeBlockDevices(self, block_devices, disk_spec):
     """Returns available block devices that are not in used as data disk or as

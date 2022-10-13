@@ -120,7 +120,7 @@ class DigitalOceanVirtualMachine(virtual_machine.BaseVirtualMachine):
 
     return retcode == 0
 
-  def CreateScratchDisk(self, disk_spec):
+  def CreateScratchDisk(self, _, disk_spec):
     """Create a VM's scratch disk.
 
     Args:
@@ -153,4 +153,6 @@ class DigitalOceanVirtualMachine(virtual_machine.BaseVirtualMachine):
         data_disk.disk_number = self.remote_disk_counter + 1
         self.remote_disk_counter += 1
         disks.append(data_disk)
-      self._CreateScratchDiskFromDisks(disk_spec, disks)
+
+      scratch_disk = self._CreateScratchDiskFromDisks(disk_spec, disks)
+      self._PrepareScratchDisk(scratch_disk, disk_spec)

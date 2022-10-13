@@ -7,6 +7,7 @@ from absl import flags
 from absl.testing import flagsaver
 from absl.testing import parameterized
 import mock
+from perfkitbenchmarker import relational_db
 from perfkitbenchmarker import vm_util
 from perfkitbenchmarker.providers.gcp import gcp_spanner
 from perfkitbenchmarker.providers.gcp import util
@@ -17,40 +18,34 @@ import requests
 FLAGS = flags.FLAGS
 
 
-def GetTestSpannerInstance():
-  return gcp_spanner.GcpSpannerInstance(
-      name='test_instance', database='test_database')
+def GetTestSpannerInstance(engine='spanner-googlesql'):
+  spec_args = {'cloud': 'GCP', 'engine': engine}
+  spanner_spec = gcp_spanner.SpannerSpec(
+      'test_component', flag_values=FLAGS, **spec_args)
+  spanner_spec.spanner_database_name = 'test_database'
+  spanner_class = relational_db.GetRelationalDbClass(
+      cloud='GCP', is_managed_db=True, engine=engine)
+  return spanner_class(spanner_spec)
 
 
 class SpannerTest(pkb_common_test_case.PkbCommonTestCase):
 
   def setUp(self):
     super().setUp()
-    pass
+    saved_flag_values = flagsaver.save_flag_values()
+    FLAGS.run_uri = 'test_uri'
+    self.addCleanup(flagsaver.restore_flag_values, saved_flag_values)
 
-  @flagsaver.flagsaver
-  def testInitFromSpec(self):
-    FLAGS.zone = ['us-east1-a']
-    spec_args = {
-        'service_type': gcp_spanner.DEFAULT_SPANNER_TYPE,
-        'name': 'test_instance',
-        'description': 'test_description',
-        'database': 'test_database',
-        'ddl': 'test_schema',
-        'nodes': 2,
-        'project': 'test_project',
-    }
-    test_spec = gcp_spanner.SpannerSpec('test_component', None, **spec_args)
+  def testFlagOverrides(self):
+    FLAGS['cloud_spanner_config'].parse('regional-us-central1')
+    FLAGS['cloud_spanner_nodes'].parse(5)
+    FLAGS['cloud_spanner_project'].parse('test_project')
 
-    spanner = gcp_spanner.GcpSpannerInstance.FromSpec(test_spec)
+    test_instance = GetTestSpannerInstance()
 
-    self.assertEqual(spanner.name, 'test_instance')
-    self.assertEqual(spanner._description, 'test_description')
-    self.assertEqual(spanner.database, 'test_database')
-    self.assertEqual(spanner._ddl, 'test_schema')
-    self.assertEqual(spanner.nodes, 2)
-    self.assertEqual(spanner.project, 'test_project')
-    self.assertEqual(spanner._config, 'regional-us-east1')
+    self.assertEqual(test_instance.nodes, 5)
+    self.assertEqual(test_instance._config, 'regional-us-central1')
+    self.assertEqual(test_instance.project, 'test_project')
 
   def testSetNodes(self):
     test_instance = GetTestSpannerInstance()
@@ -119,7 +114,7 @@ class SpannerTest(pkb_common_test_case.PkbCommonTestCase):
 
     # Assert
     mock_request.assert_called_once_with(
-        'https://spanner.googleapis.com/v1/projects/test_project/instances/test_instance',
+        'https://spanner.googleapis.com/v1/projects/test_project/instances/pkb-db-instance-test_uri',
         headers={'Authorization': 'Bearer test_token'},
         json={
             'instance': {
@@ -155,7 +150,8 @@ class SpannerTest(pkb_common_test_case.PkbCommonTestCase):
   def testCalculateStartingThroughput(self, write_proportion, read_proportion,
                                       expected_qps):
     # Arrange
-    test_spanner = gcp_spanner.GcpSpannerInstance(nodes=3)
+    test_spanner = GetTestSpannerInstance()
+    test_spanner.nodes = 3
 
     # Act
     actual_qps = test_spanner.CalculateRecommendedThroughput(

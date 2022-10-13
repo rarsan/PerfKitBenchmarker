@@ -21,17 +21,10 @@ import posixpath
 from absl import flags
 
 from perfkitbenchmarker import data
+from perfkitbenchmarker import db_util
 from perfkitbenchmarker import os_types
 from perfkitbenchmarker import relational_db
 from perfkitbenchmarker import sql_engine_utils
-
-SERVER_GCE_NUM_LOCAL_SSDS = flags.DEFINE_integer(
-    'server_gce_num_local_ssds', 0,
-    'The number of ssds that should be added to the Server.')
-
-SERVER_GCE_SSD_INTERFACE = flags.DEFINE_enum(
-    'server_gce_ssd_interface', 'SCSI', ['SCSI', 'NVME'],
-    'The ssd interface for GCE local SSD.')
 
 FLAGS = flags.FLAGS
 
@@ -217,7 +210,7 @@ class IAASRelationalDb(relational_db.BaseRelationalDb):
 
     if db_engine == sql_engine_utils.SQLSERVER:
       self.spec.database_username = 'sa'
-      self.spec.database_password = relational_db.GenerateRandomDbPassword()
+      self.spec.database_password = db_util.GenerateRandomDbPassword()
       self.server_vm.RemoteCommand('sqlcmd -Q "ALTER LOGIN sa ENABLE;"')
       self.server_vm.RemoteCommand(
           'sqlcmd -Q "ALTER LOGIN sa WITH PASSWORD = \'%s\' ;"' %
@@ -257,19 +250,21 @@ class IAASRelationalDb(relational_db.BaseRelationalDb):
   def _SetupLinuxUnmanagedDatabase(self):
     db_engine = self.spec.engine
     self.server_vm_query_tools.InstallPackages()
+    self.server_vm.Install('rsync')
 
-    if self.client_vm.IS_REBOOTABLE:
-      self.client_vm.ApplySysctlPersistent({
-          'net.ipv4.tcp_keepalive_time': 100,
-          'net.ipv4.tcp_keepalive_intvl': 100,
-          'net.ipv4.tcp_keepalive_probes': 10
-      })
-    if self.server_vm.IS_REBOOTABLE:
-      self.server_vm.ApplySysctlPersistent({
-          'net.ipv4.tcp_keepalive_time': 100,
-          'net.ipv4.tcp_keepalive_intvl': 100,
-          'net.ipv4.tcp_keepalive_probes': 10
-      })
+    if relational_db.OPTIMIZE_DB_SYSCTL_CONFIG.value:
+      if self.client_vm.IS_REBOOTABLE:
+        self.client_vm.ApplySysctlPersistent({
+            'net.ipv4.tcp_keepalive_time': 100,
+            'net.ipv4.tcp_keepalive_intvl': 100,
+            'net.ipv4.tcp_keepalive_probes': 10
+        })
+      if self.server_vm.IS_REBOOTABLE:
+        self.server_vm.ApplySysctlPersistent({
+            'net.ipv4.tcp_keepalive_time': 100,
+            'net.ipv4.tcp_keepalive_intvl': 100,
+            'net.ipv4.tcp_keepalive_probes': 10
+        })
 
     if db_engine == 'mysql':
       self._InstallMySQLServer()
@@ -359,7 +354,6 @@ class IAASRelationalDb(relational_db.BaseRelationalDb):
         'sudo sed -i.bak "s:shared_buffers = 128MB:shared_buffers = {}GB:" '
         '{}'.format(self.postgres_shared_buffer_size, postgres_conf_file))
     # Update data path to new location
-    vm.InstallPackages('rsync')
     vm.RemoteCommand('sudo rsync -av /var/lib/postgresql /scratch')
 
     # # Use cat to move files because mv will override file permissions

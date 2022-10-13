@@ -63,6 +63,12 @@ flags.DEFINE_list(
     '"type:key=value" to be passed into DPB clusters. See '
     'https://cloud.google.com/dataproc/docs/concepts/configuring-clusters/cluster-properties.'
 )
+flags.DEFINE_float(
+    'dpb_job_poll_interval_secs', 5,
+    'Poll interval to check submitted job status in seconds. Only applies for '
+    'DPB service implementations that do not support synchronous job '
+    'submissions (i.e. not Dataproc).',
+    lower_bound=0, upper_bound=120)
 flags.DEFINE_string(
     'dpb_initialization_actions', None,
     'A comma separated list of Google Cloud Storage URIs of executables to run on each node in the DPB cluster. See https://cloud.google.com/sdk/gcloud/reference/dataproc/clusters/create#--initialization-actions.'
@@ -195,6 +201,7 @@ class BaseDpbService(resource.BaseResource):
                 job_arguments: Optional[List[str]] = None,
                 job_files: Optional[List[str]] = None,
                 job_jars: Optional[List[str]] = None,
+                job_py_files: Optional[List[str]] = None,
                 job_type: Optional[str] = None,
                 properties: Optional[Dict[str, str]] = None) -> JobResult:
     """Submit a data processing job to the backend.
@@ -206,15 +213,17 @@ class BaseDpbService(resource.BaseResource):
         job. Must be one of the following file formats ".py, .zip, or .egg".
       query_file: HCFS URI of file containing Spark SQL script to execute as the
         job.
-      job_poll_interval: integer saying how often to poll for job completion.
-        Not used by providers for which submit job is a synchronous operation.
+      job_poll_interval: number of seconds saying how often to poll for job
+        completion. Not used by providers for which submit job is a synchronous
+        operation.
       job_stdout_file: String giving the location of the file in which to put
         the standard out of the job.
       job_arguments: List of string arguments to pass to driver application.
         These are not the arguments passed to the wrapper that submits the job.
       job_files: Files passed to a Spark Application to be distributed to
         executors.
-      job_jars: Jars to pass to the application
+      job_jars: Jars to pass to the application.
+      job_py_files: Python source files to pass to the application.
       job_type: Spark or Hadoop job
       properties: Dict of properties to pass with the job.
 
@@ -227,6 +236,9 @@ class BaseDpbService(resource.BaseResource):
     pass
 
   def _WaitForJob(self, job_id, timeout, poll_interval):
+
+    if poll_interval is None:
+      poll_interval = FLAGS.dpb_job_poll_interval_secs
 
     @vm_util.Retry(
         timeout=timeout,
@@ -267,6 +279,7 @@ class BaseDpbService(resource.BaseResource):
       job_files: Optional[List[str]] = None,
       job_jars: Optional[List[str]] = None,
       job_type: Optional[str] = None,
+      job_py_files: Optional[List[str]] = None,
       properties: Optional[Dict[str, str]] = None,
       spark_submit_cmd: str = spark.SPARK_SUBMIT) -> List[str]:
     """Builds the command to run spark-submit on cluster."""
@@ -286,6 +299,8 @@ class BaseDpbService(resource.BaseResource):
       cmd += ['--conf', '{}={}'.format(k, v)]
     if job_files:
       cmd = ['--files', ','.join(job_files)]
+    if job_py_files:
+      cmd += ['--py-files', ','.join(job_py_files)]
     # Main jar/script goes last before args.
     if job_type == BaseDpbService.SPARK_JOB_TYPE:
       assert jarfile
@@ -547,6 +562,7 @@ class UnmanagedDpbServiceYarnCluster(UnmanagedDpbService):
                 job_arguments=None,
                 job_files=None,
                 job_jars=None,
+                job_py_files=None,
                 job_type=None,
                 properties=None):
     """Submit a data processing job to the backend."""
@@ -636,6 +652,7 @@ class UnmanagedDpbSparkCluster(UnmanagedDpbService):
                 job_arguments=None,
                 job_files=None,
                 job_jars=None,
+                job_py_files=None,
                 job_type=None,
                 properties=None):
     """Submit a data processing job to the backend."""
@@ -646,6 +663,7 @@ class UnmanagedDpbSparkCluster(UnmanagedDpbService):
         job_arguments=job_arguments,
         job_files=job_files,
         job_jars=job_jars,
+        job_py_files=job_py_files,
         job_type=job_type,
         properties=properties)
     start_time = datetime.datetime.now()
@@ -809,6 +827,7 @@ class KubernetesSparkCluster(BaseDpbService):
                 job_arguments=None,
                 job_files=None,
                 job_jars=None,
+                job_py_files=None,
                 job_type=None,
                 properties=None):
     """Submit a data processing job to the backend."""
@@ -821,6 +840,7 @@ class KubernetesSparkCluster(BaseDpbService):
         job_arguments=job_arguments,
         job_files=job_files,
         job_jars=job_jars,
+        job_py_files=job_py_files,
         job_type=job_type,
         properties=properties)
     driver_name = self._GetDriverName()

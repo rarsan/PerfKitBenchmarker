@@ -155,6 +155,9 @@ flags.DEFINE_integer(
     'gcp_provisioned_iops', 100000,
     'Iops to provision for pd-extreme. Defaults to the gcloud '
     'default of 100000.')
+flags.DEFINE_boolean('gcp_create_disks_with_vm', True,
+                     'Whether to create PD disks at VM creation time. Defaults '
+                     'to True.')
 CLOUD_REDIS_API_OVERRIDE = flags.DEFINE_string(
     'gcp_cloud_redis_api_override',
     default='https://redis.googleapis.com/',
@@ -167,6 +170,24 @@ RETRY_GCE_SUBNETWORK_NOT_READY = flags.DEFINE_boolean(
     'retry_gce_subnetwork_not_ready', True,
     'Retry Subnetwork not ready when provisioning resources.'
 )
+
+# Flags required by dataflow_template provider
+flags.DEFINE_string('dpb_dataflow_template_gcs_location', None,
+                    'GCS URI path for pre-built Dataflow template to run.'
+                    'Template must be available before running your pipeline.'
+                    'e.g. gs://dataflow-templates/latest/PubSub_To_BigQuery')
+flags.DEFINE_string('dpb_dataflow_template_input_subscription', None,
+                    'Cloud Pub/Sub subscription ID for Dataflow template to '
+                    'ingest data from. Data must be pre-populated in '
+                    'subscription before running your pipeline.'
+                    'e.g. projects/<project>/subscriptions/<subscription>')
+flags.DEFINE_string('dpb_dataflow_template_output_ptransform', None,
+                    'Pipeline PTransform from which to retrieve Dataflow '
+                    'output throughput. Value depends on Dataflow template '
+                    'used. e.g. WriteSuccessfulRecords/StreamingInserts/'
+                    'StreamingWriteTables/StreamingWrite')
+flags.DEFINE_list('dpb_dataflow_template_additional_args', [],
+                  'Additional arguments which should be passed to job.')
 
 
 def _ValidatePreemptFlags(flags_dict):

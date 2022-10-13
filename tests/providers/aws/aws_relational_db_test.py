@@ -21,9 +21,9 @@ import unittest
 from absl import flags
 import mock
 from perfkitbenchmarker import relational_db
+from perfkitbenchmarker import relational_db_spec
 from perfkitbenchmarker import virtual_machine
 from perfkitbenchmarker import vm_util
-from perfkitbenchmarker.configs import benchmark_config_spec
 from perfkitbenchmarker.providers.aws import aws_disk
 from perfkitbenchmarker.providers.aws import aws_relational_db
 from perfkitbenchmarker.sql_engine_utils import AURORA_POSTGRES
@@ -128,10 +128,13 @@ class AwsRelationalDbTestCase(pkb_common_test_case.PkbCommonTestCase):
         'db_spec': default_server_db_spec,
         'db_disk_spec': default_server_db_disk_spec,
         'vm_groups': self.VmGroupSpec(),
+        'enable_freeze_restore': False,
+        'create_on_restore_error': False,
+        'delete_on_freeze_error': False,
     }
     spec_dict.update(additional_spec_items)
 
-    mock_db_spec = mock.Mock(spec=benchmark_config_spec._RelationalDbSpec)
+    mock_db_spec = mock.Mock(spec=relational_db_spec.RelationalDbSpec)
     mock_db_spec.configure_mock(**spec_dict)
     return mock_db_spec
 
@@ -213,7 +216,7 @@ class AwsRelationalDbTestCase(pkb_common_test_case.PkbCommonTestCase):
     }
     spec_dict.update(additional_spec_items)
 
-    mock_db_spec = mock.Mock(spec=benchmark_config_spec._RelationalDbSpec)
+    mock_db_spec = mock.Mock(spec=relational_db_spec.RelationalDbSpec)
     mock_db_spec.configure_mock(**spec_dict)
     return mock_db_spec
 
@@ -222,6 +225,11 @@ class AwsRelationalDbTestCase(pkb_common_test_case.PkbCommonTestCase):
     return self.CreateDbFromMockSpec(mock_spec)
 
   def CreateAurora(self, additional_spec_items={}):
+    additional_spec_items.update({
+        'enable_freeze_restore': False,
+        'create_on_restore_error': False,
+        'delete_on_freeze_error': False,
+    })
     with self._PatchCriticalObjects() as issue_command:
       db = self.CreateAuroraDbFromSpec(additional_spec_items)
       db._Create()

@@ -110,7 +110,7 @@ class ScratchDiskTestMixin(object):
     vm = self._CreateVm()
 
     disk_spec = disk.BaseDiskSpec(_COMPONENT, mount_point='/mountpoint0')
-    vm.CreateScratchDisk(disk_spec)
+    vm.CreateScratchDisk(0, disk_spec)
 
     assert len(vm.scratch_disks) == 1, 'Disk not added to scratch disks.'
 
@@ -123,7 +123,7 @@ class ScratchDiskTestMixin(object):
         None, scratch_disk.mount_options, scratch_disk.fstab_options)
 
     disk_spec = disk.BaseDiskSpec(_COMPONENT, mount_point='/mountpoint1')
-    vm.CreateScratchDisk(disk_spec)
+    vm.CreateScratchDisk(0, disk_spec)
 
     assert len(vm.scratch_disks) == 2, 'Disk not added to scratch disks.'
 
@@ -171,7 +171,14 @@ class GceScratchDiskTest(ScratchDiskTestMixin, unittest.TestCase):
   def _CreateVm(self):
     vm_spec = gce_virtual_machine.GceVmSpec('test_vm_spec.GCP',
                                             machine_type='test_machine_type')
-    return gce_virtual_machine.Ubuntu1804BasedGceVirtualMachine(vm_spec)
+    vm = gce_virtual_machine.Ubuntu1804BasedGceVirtualMachine(vm_spec)
+    vm.GetNVMEDeviceInfo = mock.Mock()
+    vm.GetNVMEDeviceInfo.return_value = [
+        {
+            'DevicePath': '/dev/nvme1n2',
+        }
+    ]
+    return vm
 
   def _GetDiskClass(self):
     return gce_disk.GceDisk
@@ -185,14 +192,32 @@ class AwsScratchDiskTest(ScratchDiskTestMixin, unittest.TestCase):
     # In Python3 the mocking of subprocess.Popen in setup() is problematic for
     # platform.system(). It is called by RemoteCommand() in
     # _GetNvmeBootIndex() so we'll mock that instead.
-    self.patches.append(mock.patch(
-        aws_virtual_machine.__name__ + '.AwsVirtualMachine._GetNvmeBootIndex'))
+    self.patches.append(
+        mock.patch(aws_virtual_machine.__name__ +
+                   '.AwsVirtualMachine._GetNvmeBootIndex'))
+    self.patches.append(
+        mock.patch(aws_virtual_machine.__name__ +
+                   '.AwsVirtualMachine.GetVolumeIdByDevice'))
+    self.patches.append(
+        mock.patch(aws_virtual_machine.__name__ +
+                   '.AwsVirtualMachine.GetPathByDevice'))
 
   def _CreateVm(self):
-    vm_spec = aws_virtual_machine.AwsVmSpec('test_vm_spec.AWS',
-                                            zone='us-east-1a',
-                                            machine_type='test_machine_type')
-    return aws_virtual_machine.Ubuntu1604BasedAwsVirtualMachine(vm_spec)
+    vm_spec = aws_virtual_machine.AwsVmSpec(
+        'test_vm_spec.AWS', zone='us-east-1a', machine_type='test_machine_type')
+    vm = aws_virtual_machine.Ubuntu1604BasedAwsVirtualMachine(vm_spec)
+
+    vm.LogDeviceByDiskSpecId('0_0', 'foobar_1')
+    vm.LogDeviceByName('foobar_1', 'vol67890', None)
+    vm.GetNVMEDeviceInfo = mock.Mock()
+    vm.GetNVMEDeviceInfo.return_value = [
+        {
+            'DevicePath': '/dev/nvme1n2',
+            'SerialNumber': 'vol67890',
+            'ModelNumber': 'Amazon Elastic Block Store',
+        }
+    ]
+    return vm
 
   def _GetDiskClass(self):
     return aws_disk.AwsDisk

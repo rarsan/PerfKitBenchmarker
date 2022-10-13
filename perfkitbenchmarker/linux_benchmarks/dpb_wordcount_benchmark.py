@@ -65,10 +65,14 @@ dpb_wordcount_benchmark:
     worker_count: 2
 """
 
+# TODO(odiego): Deprecate WORD_COUNT_CONFIGURATION (not used in practice).
 WORD_COUNT_CONFIGURATION = dict(
     [
         (dpb_service.DATAPROC, ('org.apache.spark.examples.JavaWordCount',
                                 dpb_service.BaseDpbService.SPARK_JOB_TYPE)),
+        (dpb_service.DATAPROC_SERVERLESS,
+         ('org.apache.spark.examples.JavaWordCount',
+          dpb_service.BaseDpbService.SPARK_JOB_TYPE)),
         (dpb_service.DATAFLOW, ('org.example.WordCount',
                                 dpb_service.BaseDpbService.DATAFLOW_JOB_TYPE)),
         (dpb_service.EMR, ('org.apache.spark.examples.JavaWordCount',
@@ -84,7 +88,12 @@ flags.DEFINE_enum('dpb_wordcount_fs', dpb_service.BaseDpbService.GCS_FS,
 flags.DEFINE_string('dpb_wordcount_out_base', None,
                     'Base directory for word count output')
 flags.DEFINE_list('dpb_wordcount_additional_args', [], 'Additional arguments '
-                  'which should be passed to job.')
+                  "which should be passed to job. If the string ':BASE_DIR:' "
+                  'is contained in these arguments, it will get expanded to '
+                  'the root of the object storage bucket created for the run.')
+flags.DEFINE_bool('dpb_export_job_stats', True,
+                  'Exports job stats such as CPU usage and cost. Enabled by '
+                  'default, although only implemented in Dataflow.')
 
 FLAGS = flags.FLAGS
 
@@ -110,7 +119,7 @@ def CheckPrerequisites(benchmark_config):
 
 
 def Prepare(benchmark_spec):
-  """Download jarfile locally if using Dataflow."""
+  """Make the jarfile available if using Dataflow."""
   dpb_service_instance = benchmark_spec.dpb_service
   storage_service = dpb_service_instance.storage_service
   benchmark_spec.dpb_wordcount_jarfile = FLAGS.dpb_job_jarfile
@@ -158,7 +167,7 @@ def Run(benchmark_spec):
       jarfile = benchmark_spec.dpb_wordcount_jarfile
 
     job_arguments = [input_location]
-  job_arguments.extend(FLAGS.dpb_wordcount_additional_args)
+  job_arguments.extend(_GetJobAdditionalArguments(dpb_service_instance))
 
   # TODO (saksena): Finalize more stats to gather
   results = []
@@ -180,7 +189,8 @@ def Run(benchmark_spec):
   results.append(sample.Sample('run_time', run_time, 'seconds', metadata))
 
   # TODO(odiego): Refactor to avoid explicit service type checks.
-  if dpb_service_instance.SERVICE_TYPE == dpb_service.DATAFLOW:
+  if (dpb_service_instance.SERVICE_TYPE == dpb_service.DATAFLOW and
+      FLAGS.dpb_export_job_stats):
     avg_cpu_util = dpb_service_instance.GetAvgCpuUtilization(
         start_time, end_time)
     results.append(sample.Sample('avg_cpu_util', avg_cpu_util, '%', metadata))
@@ -205,3 +215,8 @@ def _GetJobArguments(dpb_service_type):
     raise NotImplementedError
   else:
     return WORD_COUNT_CONFIGURATION[dpb_service_type]
+
+
+def _GetJobAdditionalArguments(dpb_service_instance):
+  return [arg.replace(':BASE_DIR:', dpb_service_instance.base_dir)
+          for arg in FLAGS.dpb_wordcount_additional_args]

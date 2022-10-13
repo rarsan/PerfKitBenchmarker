@@ -79,6 +79,10 @@ _METADATA_PREEMPT_URI = 'http://metadata.google.internal/computeMetadata/v1/inst
 _METADATA_PREEMPT_CMD = f'curl {_METADATA_PREEMPT_URI} -H "Metadata-Flavor: Google"'
 _METADATA_PREEMPT_CMD_WIN = (f'Invoke-RestMethod -Uri {_METADATA_PREEMPT_URI} '
                              '-Headers @{"Metadata-Flavor"="Google"}')
+# Machine type to ARM architecture.
+_MACHINE_TYPE_PREFIX_TO_ARM_ARCH = {
+    't2a': 'neoverse-n1',
+}
 
 
 class GceUnexpectedWindowsAdapterOutputError(Exception):
@@ -380,6 +384,15 @@ def GenerateAcceleratorSpecString(accelerator_type, accelerator_count):
       accelerator_count)
 
 
+def GetArmArchitecture(machine_type):
+  """Returns the specific ARM processor architecture of the VM."""
+  # t2a-standard-1 -> t2a
+  if not machine_type:
+    return None
+  prefix = re.split(r'[dn]?\-', machine_type)[0]
+  return _MACHINE_TYPE_PREFIX_TO_ARM_ARCH.get(prefix)
+
+
 class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
   """Object representing a Google Compute Engine Virtual Machine."""
 
@@ -472,6 +485,26 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
     self.automatic_restart = FLAGS.gce_automatic_restart
     if self.preemptible:
       self.preempt_marker = f'gs://{FLAGS.gcp_preemptible_status_bucket}/{FLAGS.run_uri}/{self.name}'
+    arm_arch = GetArmArchitecture(self.machine_type)
+    if arm_arch:
+      # Assign host_arch to avoid running detect_host on ARM
+      self.host_arch = arm_arch
+      self.is_aarch64 = True
+
+      if 'arm64' not in self.image_family:
+        arm_image_family = f'{self.image_family}-arm64'
+        logging.warning(
+            'ARM image must be used; '
+            'changing image to %s',
+            arm_image_family,
+        )
+        self.image_family = arm_image_family
+
+    # Reset image when running client-server benchmarks where client must be x86
+    if (not arm_arch and self.image_family and 'arm64' in self.image_family):
+      logging.warning('Using default image and project for non-ARM VM')
+      self.image_family = self.DEFAULT_IMAGE_FAMILY
+      self.image_project = self.DEFAULT_IMAGE_PROJECT
 
   def _GetNetwork(self):
     """Returns the GceNetwork to use."""
@@ -602,6 +635,31 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
 
     cmd.flags['local-ssd'] = (['interface={0}'.format(
         self.ssd_interface)] * self.max_local_disks)
+
+    create_disks = []
+    for disk_spec_id, disk_spec in enumerate(self.disk_specs):
+      if not self.DiskTypeCreatedOnVMCreation(disk_spec.disk_type):
+        continue
+      # local disks are handled above in a separate gcloud flag
+      if disk_spec.disk_type == disk.LOCAL:
+        continue
+      for i in range(disk_spec.num_striped_disks):
+        name = self._GenerateDiskNamePrefix(disk_spec_id, i)
+        pd_args = [
+            f'name={name}',
+            f'device-name={name}',
+            f'size={disk_spec.disk_size}',
+            f'type={disk_spec.disk_type}',
+            'auto-delete=yes',
+            'boot=no',
+            'mode=rw',
+        ]
+        if disk_spec.disk_type == gce_disk.PD_EXTREME:
+          pd_args += [f'provisioned-iops={FLAGS.gcp_provisioned_iops}']
+        create_disks.append(','.join(pd_args))
+    if create_disks:
+      cmd.flags['create-disk'] = create_disks
+
     if FLAGS.gcloud_scopes:
       cmd.flags['scopes'] = ','.join(re.split(r'[,; ]', FLAGS.gcloud_scopes))
     cmd.flags['labels'] = util.MakeFormattedDefaultTags()
@@ -828,10 +886,16 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
       pass
     return True
 
-  def CreateScratchDisk(self, disk_spec):
+  def _GenerateDiskNamePrefix(self, disk_spec_id, index):
+    """Generates a deterministic disk name given disk_spec_id and index."""
+    return f'{self.name}-data-{disk_spec_id}-{index}'
+
+  def CreateScratchDisk(self, disk_spec_id, disk_spec):
     """Create a VM's scratch disk.
 
     Args:
+      disk_spec_id: Deterministic order of this disk_spec in the VM's list of
+        disk_specs.
       disk_spec: virtual_machine.BaseDiskSpec object of the disk.
     """
     disks = []
@@ -851,8 +915,8 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
           disk_number = self.local_disk_counter + self.NVME_START_INDEX
         else:
           raise errors.Error('Unknown Local SSD Interface.')
-        data_disk = gce_disk.GceDisk(disk_spec, name, self.zone, self.project,
-                                     replica_zones=replica_zones)
+        # This is a local ssd, it does not need the regional pd flag.
+        data_disk = gce_disk.GceDisk(disk_spec, name, self.zone, self.project)
         data_disk.disk_number = disk_number
         self.local_disk_counter += 1
         if self.local_disk_counter > self.max_local_disks:
@@ -861,10 +925,14 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
         data_disk = self._GetNfsService().CreateNfsDisk()
       elif disk_spec.disk_type == disk.OBJECT_STORAGE:
         data_disk = gcsfuse_disk.GcsFuseDisk(disk_spec)
-      else:
-        name = '%s-data-%d-%d' % (self.name, len(self.scratch_disks), i)
+      else:  # disk_type is PD
+        name = self._GenerateDiskNamePrefix(disk_spec_id, i)
         data_disk = gce_disk.GceDisk(disk_spec, name, self.zone, self.project,
                                      replica_zones=replica_zones)
+        if gce_disk.PdDriveIsNvme(self):
+          data_disk.interface = gce_disk.NVME
+        else:
+          data_disk.interface = gce_disk.SCSI
         # Remote disk numbers start at 1+max_local_disks (0 is the system disk
         # and local disks occupy 1-max_local_disks).
         data_disk.disk_number = (self.remote_disk_counter +
@@ -872,15 +940,77 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
         self.remote_disk_counter += 1
       disks.append(data_disk)
 
-    self._CreateScratchDiskFromDisks(disk_spec, disks)
+    scratch_disk = self._CreateScratchDiskFromDisks(disk_spec, disks)
+    nvme_devices = self.GetNVMEDeviceInfo()
+    remote_nvme_devices = self.FindRemoteNVMEDevices(scratch_disk, nvme_devices)
+    self.UpdateDevicePath(scratch_disk, remote_nvme_devices)
+    self._PrepareScratchDisk(scratch_disk, disk_spec)
+
+  def FindRemoteNVMEDevices(self, _, nvme_devices):
+    """Find the paths for all remote NVME devices inside the VM."""
+    local_disks = []
+    if self.ssd_interface == NVME:
+      for local_disk_count in range(self.max_local_disks):
+        name, _ = self.RemoteCommand(f'find /dev/nvme*n{local_disk_count + 1}')
+        name = name.strip().split('/')[-1]
+        local_disk_name = '/dev/%s' % name
+        local_disks.append(local_disk_name)
+    # filter out local nvme devices from all nvme devices
+    remote_nvme_devices = [
+        device['DevicePath']
+        for device in nvme_devices
+        if device['DevicePath'] not in local_disks
+    ]
+    # if boot disk is nvme,
+    # remove the boot disk, which is the disk with the lowest index
+    if gce_disk.PdDriveIsNvme(self):
+      return sorted(remote_nvme_devices)[1:]
+    else:
+      return sorted(remote_nvme_devices)
+
+  def UpdateDevicePath(self, scratch_disk, remote_nvme_devices):
+    """Updates the paths for all remote NVME devices inside the VM."""
+    disks = scratch_disk.disks if scratch_disk.is_striped else [scratch_disk]
+    # round robin assignment since we cannot tell the disks apart.
+    for d in disks:
+      if d.disk_type in gce_disk.GCE_REMOTE_DISK_TYPES and d.interface == NVME:
+        d.name = remote_nvme_devices.pop()
+
+  def DiskCreatedOnVMCreation(self, data_disk):
+    """Returns whether the disk has been created during VM creation."""
+    return self.DiskTypeCreatedOnVMCreation(data_disk.disk_type)
+
+  def DiskTypeCreatedOnVMCreation(self, disk_type):
+    """Returns whether the disk type has been created during VM creation."""
+    if not FLAGS.gcp_create_disks_with_vm:
+      return False
+    # GCE regional disks cannot use create-on-create.
+    if FLAGS.data_disk_zones:
+      return False
+    return disk_type in gce_disk.GCE_REMOTE_DISK_TYPES + [disk.LOCAL]
 
   def AddMetadata(self, **kwargs):
     """Adds metadata to disk."""
     # vm metadata added to vm on creation.
+    # Add metadata to boot disk
     cmd = util.GcloudCommand(
         self, 'compute', 'disks', 'add-labels', self.name)
     cmd.flags['labels'] = util.MakeFormattedDefaultTags()
     cmd.Issue()
+
+    # Add metadata to data disks
+    for disk_spec_id, disk_spec in enumerate(self.disk_specs):
+      if not self.DiskTypeCreatedOnVMCreation(disk_spec.disk_type):
+        continue
+      # local disks are not tagged
+      if disk_spec.disk_type == disk.LOCAL:
+        continue
+      for i in range(disk_spec.num_striped_disks):
+        name = self._GenerateDiskNamePrefix(disk_spec_id, i)
+        cmd = util.GcloudCommand(
+            self, 'compute', 'disks', 'add-labels', name)
+        cmd.flags['labels'] = util.MakeFormattedDefaultTags()
+        cmd.Issue()
 
   def AllowRemoteAccessPorts(self):
     """Creates firewall rules for remote access if required."""
@@ -1247,6 +1377,18 @@ class RockyLinux8OptimizedBasedGceVirtualMachine(
     RockyLinux8BasedGceVirtualMachine):
   OS_TYPE = os_types.ROCKY_LINUX8_OPTIMIZED
   DEFAULT_IMAGE_FAMILY = 'rocky-linux-8-optimized-gcp'
+
+
+class RockyLinux9BasedGceVirtualMachine(BaseLinuxGceVirtualMachine,
+                                        linux_vm.RockyLinux9Mixin):
+  DEFAULT_IMAGE_FAMILY = 'rocky-linux-9'
+  DEFAULT_IMAGE_PROJECT = 'rocky-linux-cloud'
+
+
+class RockyLinux9OptimizedBasedGceVirtualMachine(
+    RockyLinux9BasedGceVirtualMachine):
+  OS_TYPE = os_types.ROCKY_LINUX9_OPTIMIZED
+  DEFAULT_IMAGE_FAMILY = 'rocky-linux-9-optimized-gcp'
 
 
 class CentOsStream9BasedGceVirtualMachine(BaseLinuxGceVirtualMachine,

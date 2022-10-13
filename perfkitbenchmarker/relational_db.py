@@ -14,10 +14,7 @@
 
 
 import abc
-import random
 import re
-import string
-import uuid
 
 from absl import flags
 from perfkitbenchmarker import errors
@@ -115,6 +112,17 @@ flags.DEFINE_integer(
     'Size of the shared buffer size in GB. '
     'Defaults to 25% of VM memory if unset')
 
+OPTIMIZE_DB_SYSCTL_CONFIG = flags.DEFINE_bool(
+    'optimize_db_sysctl_config', True,
+    'Flag to run sysctl optimization for IAAS relational database.')
+
+SERVER_GCE_NUM_LOCAL_SSDS = flags.DEFINE_integer(
+    'server_gce_num_local_ssds', 0,
+    'The number of ssds that should be added to the Server.')
+SERVER_GCE_SSD_INTERFACE = flags.DEFINE_enum(
+    'server_gce_ssd_interface', 'SCSI', ['SCSI', 'NVME'],
+    'The ssd interface for GCE local SSD.')
+
 
 BACKUP_TIME_REGULAR_EXPRESSION = '^\d\d\:\d\d$'
 flags.register_validator(
@@ -147,22 +155,6 @@ class RelationalDbEngineNotFoundError(Exception):
 
 class UnsupportedError(Exception):
   pass
-
-
-def GenerateRandomDbPassword():
-  """Generate a strong random password.
-
-   # pylint: disable=line-too-long
-  Reference: https://docs.microsoft.com/en-us/sql/relational-databases/security/password-policy?view=sql-server-ver15
-  # pylint: enable=line-too-long
-
-  Returns:
-    A random database password.
-  """
-  prefix = [random.choice(string.ascii_lowercase),
-            random.choice(string.ascii_uppercase),
-            random.choice(string.digits)]
-  return ''.join(prefix) + str(uuid.uuid4())[:10]
 
 
 def GetRelationalDbClass(cloud, is_managed_db, engine):
@@ -208,7 +200,10 @@ class BaseRelationalDb(resource.BaseResource):
     Args:
       relational_db_spec: spec of the managed database.
     """
-    super(BaseRelationalDb, self).__init__()
+    super(BaseRelationalDb, self).__init__(
+        enable_freeze_restore=relational_db_spec.enable_freeze_restore,
+        create_on_restore_error=relational_db_spec.create_on_restore_error,
+        delete_on_freeze_error=relational_db_spec.delete_on_freeze_error)
     self.spec = relational_db_spec
     self.instance_id = 'pkb-db-instance-' + FLAGS.run_uri
     self.port = self.GetDefaultPort()
