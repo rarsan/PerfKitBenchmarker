@@ -92,6 +92,14 @@ class GcpDpbDataflowTemplate(gcp_dpb_dataflow.GcpDpbDataflow):
         'parameters': ','.join(job_arguments),
         'format': 'json',
     }
+    # If specified, re-use existing network and subnet to launch worker VMs in
+    if FLAGS.gce_network_name:
+      cmd.flags['network'] = FLAGS.gce_network_name
+    if FLAGS.gce_subnet_name:
+      cmd.flags['subnetwork'] = (
+          f'regions/{region}/subnetworks/{FLAGS.gce_subnet_name}')
+    if FLAGS.dpb_dataflow_disable_public_ips:
+      cmd.flags['disable-public-ips'] = True
 
     stdout, _, _ = cmd.Issue()
 

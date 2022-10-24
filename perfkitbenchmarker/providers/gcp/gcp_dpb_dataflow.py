@@ -60,6 +60,10 @@ flags.DEFINE_integer('dpb_dataflow_timeout', 300,
 flags.DEFINE_string(
     'dpb_dataflow_service_account_key', None,
     'GCS path to service account to run Dataflow jobs.')
+flags.DEFINE_boolean(
+    'dpb_dataflow_disable_public_ips', None,
+    'If true, Dataflow workers must not use public IP addresses. If unset, '
+    'workers are assigned public IP addresses by default.')
 
 
 flags.register_validator(
@@ -468,6 +472,67 @@ class GcpDpbDataflow(dpb_service.BaseDpbService):
       return None
 
     return self._GetMaxValueFromTimeSeries(results)
+
+  def GetAvgOutputThroughput(
+      self, ptransform: str,
+      start_time: datetime.datetime, end_time: datetime.datetime):
+    """Get avg throughput from a particular pTransform during job run interval.
+
+    Args:
+      ptransform: name of pipeline's PTransform to get output throughput from.
+      start_time: datetime specifying the beginning of the time interval.
+      end_time: datetime specifying the end of the time interval.
+
+    Returns:
+      Avg value across time interval
+    """
+    client = monitoring_v3.MetricServiceClient()
+    project_name = f'projects/{self.project}'
+
+    now_seconds = int(time.time())
+    end_time_seconds = int(end_time.timestamp())
+    # Dataflow metrics data can take up to 180 seconds to appear
+    if (now_seconds - end_time_seconds) < DATAFLOW_METRICS_DELAY_SECONDS:
+      logging.info(
+          'Waiting for Dataflow metrics to be available (up to 3 minutes)...')
+      time.sleep(
+          DATAFLOW_METRICS_DELAY_SECONDS - (now_seconds - end_time_seconds))
+
+    interval = types.TimeInterval()
+    # Shift TZ of datetime arguments since FromDatetime() assumes UTC
+    # See
+    # https://googleapis.dev/python/protobuf/latest/google/protobuf/timestamp_pb2.html#google.protobuf.timestamp_pb2.Timestamp.FromDatetime
+    interval.start_time.FromDatetime(
+        start_time.astimezone(datetime.timezone.utc))
+    interval.end_time.FromDatetime(
+        end_time.astimezone(datetime.timezone.utc))
+
+    api_filter = (
+        'metric.type = "dataflow.googleapis.com/job/elements_produced_count" '
+        f'AND resource.labels.project_id = "{self.project}" '
+        f'AND metric.labels.job_id = "{self.job_id}" '
+        f'AND metric.labels.ptransform = "{ptransform}" ')
+
+    aggregation = types.Aggregation(
+        alignment_period={'seconds': 60},  # 1 minute
+        per_series_aligner=types.Aggregation.Aligner.ALIGN_RATE,
+    )
+
+    results = client.list_time_series(
+        name=project_name,
+        filter_=api_filter,
+        interval=interval,
+        view=monitoring_v3.enums.ListTimeSeriesRequest.TimeSeriesView.FULL,
+        aggregation=aggregation,
+    )
+
+    if not results:
+      logging.warning(
+          'No monitoring data found. Unable to calculate avg throughput.')
+      return None
+
+    return self._GetAvgValueFromTimeSeries(results)
+
 
   # TODO(user): Consider move to separate class to deal specifically with
   # streaming pubsub input workloads
