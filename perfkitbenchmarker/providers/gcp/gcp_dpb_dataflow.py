@@ -331,11 +331,12 @@ class GcpDpbDataflow(dpb_service.BaseDpbService):
         METRIC_TYPE_DISTRIBUTION: distributions,
     }
 
-  def GetMetricValue(self, name, metric_type=METRIC_TYPE_COUNTER):
+  def GetMetricValue(self, name, default=None, metric_type=METRIC_TYPE_COUNTER):
     """Get value of a job's metric.
 
     Args:
       name: The name of the metric.
+      default: The default value to return if (custom) metric is not found.
       metric_type: Either METRIC_TYPE_COUNTER or METRIC_TYPE_DISTRIBUTION.
 
     Returns:
@@ -350,7 +351,10 @@ class GcpDpbDataflow(dpb_service.BaseDpbService):
     if self.job_metrics is None:
       self._PullJobMetrics()
 
-    return self.job_metrics[metric_type][name]
+    if name in self.job_metrics[metric_type].keys():
+      return self.job_metrics[metric_type][name]
+    else:
+      return default
 
   def GetAvgCpuUtilization(
       self, start_time: datetime.datetime, end_time: datetime.datetime):
